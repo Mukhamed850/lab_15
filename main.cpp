@@ -1,8 +1,10 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <unordered_set>
-
+#include <thread>
+#include <future>
 class Matrix {
 private:
     int num_rows;
@@ -12,6 +14,8 @@ private:
     double p_get_det(int start_row, int end_row, int end_col, std::unordered_set<int>& excluded_cols) const;
     Matrix p_get_inverse() const;
 
+    double p_get_det_thread() const;
+    Matrix p_get_inverse_matrix_thread() const;
 public:
     Matrix();
     Matrix(int rows, int columns);
@@ -19,6 +23,7 @@ public:
     Matrix(int rows, int columns, std::string namefile);
     Matrix(const Matrix& other);
     ~Matrix();
+
     int     get_num_rows() const;
     int     get_num_columns() const;
     double  get_det() const;
@@ -48,20 +53,38 @@ public:
     friend Matrix operator*(double scalar, const Matrix& other);
     friend Matrix operator*(Matrix& other, double scalar) { return scalar * other; }
     friend Matrix operator*(Matrix& first, Matrix& second);
+
+    // THREADS //
+
+    double get_det_thread() const;
+    Matrix get_inverse_matrix_thread() const;
+
+    // FUTURES //
+    Matrix plus_with(const Matrix& other, int num_threads ) const;
+    Matrix minus_with(const Matrix& other, int num_threads) const;
+    Matrix multiply_sc(double scalar, int num_threads) const;
+
 };
+
+
+
+
 
 
 int main() {
     int r, c;
     std::cin >> r >> c;
-    Matrix matrix(r, c);
+    Matrix matrix1(r, c);
     for(int i = 0; i < r; i++) {
         for(int j = 0; j < c; j++)
-            std::cin >> matrix(i, j);
+            std::cin >> matrix1(i, j);
     }
     std::cout << std::endl;
-    Matrix result(!matrix);
-    Matrix::print(result);
+    Matrix matrix2(r, c);
+    for(int i = 0; i < r; i++) {
+        for(int j = 0; j < c; j++)
+            std::cin >> matrix2(i, j);
+    }
 
     return 0;
 }
@@ -120,13 +143,13 @@ Matrix::Matrix(int rows, int columns, std::string namefile) : num_rows(rows), nu
     }
 }
 
-Matrix::Matrix(const Matrix& other) : num_rows(other.num_rows), num_columns(other.num_columns) {
-	data = new double*[num_rows];
-	for(int i = 0; i < num_rows; i++) {
-		data[i] = new double[num_columns];
-		for(int j = 0; j < num_columns; j++)
-			data[i][j] = other.data[i][j];
-	}
+Matrix::Matrix(const Matrix &other) : num_rows(other.num_rows), num_columns(other.num_columns) {
+    data = new double*[num_rows];
+    for(int i = 0; i < num_rows; i++) {
+        data[i] = new double[num_columns];
+        for(int j = 0; j < num_columns; j++)
+            data[i][j] = other.data[i][j];
+    }
 }
 
 Matrix::~Matrix() {
@@ -217,23 +240,20 @@ Matrix Matrix::p_get_inverse() const {
     }
     Matrix transpose(this->get_transposition());
     Matrix union_matrix(transpose);
-    for(int i = 0; i < union_matrix.num_rows; i++) {
-        for(int j = 0; j < union_matrix.num_columns; j++) {
+    for(int row = 0; row < union_matrix.num_rows; row++) {
+        for(int col = 0; col < union_matrix.num_columns; col++) {
             Matrix lower(union_matrix.num_rows - 1, union_matrix.num_columns - 1);
             int l_i = 0;
-            for(int ii = 0; ii < union_matrix.num_rows; ii++) {
+            for(int i = 0; i < union_matrix.num_rows; i++) {
                 int l_j = 0;
-                bool flag = false;
-                for(int jj = 0; jj < union_matrix.num_columns; jj++) {
-                    if(ii != i && jj != j) {
-                        flag = true;
-                        lower(l_i, l_j++) = transpose(ii, jj);
-                    }
+                for(int j = 0; j < union_matrix.num_columns; j++) {
+                    if(i != row && j != col)
+                        lower.data[l_i][l_j++] = transpose.data[i][j];
                 }
-                if(flag)
+                if(i != row)
                     l_i++;
             }
-            union_matrix(i, j) = (((i + j) % 2 == 0) ? 1 : -1) * lower.get_det();
+            union_matrix.data[row][col] = (((row + col) % 2 == 0) ? 1 : -1) * lower.get_det();
         }
     }
     return union_matrix / det;
@@ -304,10 +324,29 @@ Matrix Matrix::operator+(const Matrix& other) const {
         exit(1);
     }
     Matrix result(num_rows, num_columns);
-    for(int i = 0; i < num_rows; i++) {
-        for(int j = 0; j < num_columns; j++)
-            result.data[i][j] = this->data[i][j] + other.data[i][j];
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([this, &result, &other, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] + other.data[row][col];
+                }
+            }
+        });
+        start_row = end_row;
     }
+
+    for(auto& thread : threads)
+        thread.join();
     return result;
 }
 
@@ -317,28 +356,85 @@ Matrix Matrix::operator-(const Matrix &other) const {
         exit(1);
     }
     Matrix result(num_rows, num_columns);
-    for(int i = 0; i < num_rows; i++) {
-        for(int j = 0; j < num_columns; j++)
-            result.data[i][j] = this->data[i][j] - other.data[i][j];
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([this, &result, &other, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] - other.data[row][col];
+                }
+            }
+        });
+        start_row = end_row;
     }
+
+    for(auto& thread : threads)
+        thread.join();
     return result;
 }
 
 Matrix Matrix::operator*(double scalar) const {
     Matrix result(num_rows, num_columns);
-    for(int i = 0; i < num_rows; i++) {
-        for(int j = 0; j < num_columns; j++)
-            result.data[i][j] = data[i][j] * scalar;
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([this, &result, scalar, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] * scalar;
+                }
+            }
+        });
+        start_row = end_row;
     }
+
+    for(auto& thread : threads)
+        thread.join();
     return result;
 }
 
 Matrix Matrix::operator/(double scalar) const {
     Matrix result(num_rows, num_columns);
-    for(int i = 0; i < num_rows; i++) {
-        for(int j = 0; j < num_columns; j++)
-            result.data[i][j] = data[i][j] / scalar;
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([this, &result, scalar, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] / scalar;
+                }
+            }
+        });
+        start_row = end_row;
     }
+
+    for(auto& thread : threads)
+        thread.join();
     return result;
 }
 
@@ -365,10 +461,29 @@ bool Matrix::operator==(int zero_or_unit) const {
 
 Matrix operator*(double scalar, const Matrix& other) {
     Matrix result(other.num_rows, other.num_columns);
-    for(int i = 0; i < other.num_rows; i++) {
-        for(int j = 0; j < other.num_columns; j++)
-            result.data[i][j] = other.data[i][j] * scalar;
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = other.num_rows / num_threads;
+    int remaining_rows = other.num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([&other, &result, scalar, start_row, end_row](){
+           for(int row = start_row; row < end_row; row++) {
+               for(int col = 0; col < other.num_columns; col++) {
+                   result.data[row][col] = other.data[row][col] * scalar;
+               }
+           }
+        });
+        start_row = end_row;
     }
+
+    for(auto& thread : threads)
+        thread.join();
     return result;
 };
 
@@ -378,13 +493,190 @@ Matrix operator*(Matrix& first, Matrix& second) {
         exit(1);
     }
     Matrix result(first.num_rows, second.num_columns);
-    for(int i = 0; i < result.num_rows; i++) {
-        for(int j = 0; j < result.num_columns; j++) {
-            double sum = 0;
-            for(int k = 0; k < first.num_columns; k++)
-                sum += first.data[i][k] * second.data[k][j];
-            result.data[i][j] = sum;
+    int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads(num_threads);
+    int block_size = first.num_rows / num_threads;
+    int remaining_rows = first.num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        threads[i] = std::thread([&result, &first, &second, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < result.num_columns; col++) {
+                    double sum = 0;
+                    for(int k = 0; k < first.num_columns; k++)
+                        sum += first.data[row][k] * second.data[k][col];
+                    result.data[row][col] = sum;
+                }
+            }
+        });
+        start_row = end_row;
+    }
+    for(auto& thread : threads)
+        thread.join();
+    return result;
+}
+
+
+double Matrix::get_det_thread() const {
+    if(num_rows != num_columns) {
+        std::cerr << "ERROR: it is impossible to calculate the determinant, the matrix is not square!" << std::endl;
+        exit(1);
+    }
+    return p_get_det_thread();
+}
+double Matrix::p_get_det_thread() const {
+    std::vector<double> dets(num_columns);
+    std::vector<std::thread> threads;
+    for(int col = 0; col < num_columns; col++) {
+        threads.emplace_back([&, col](){
+            Matrix lower(num_rows - 1, num_columns - 1);
+            for(int i = 1; i < num_rows; i++) {
+                int l_j = 0;
+                for(int j = 0; j < num_columns; j++) {
+                    if(j != col)
+                        lower.data[i - 1][l_j++] = data[i][j];
+                }
+            }
+            dets[col] = lower.get_det();
+        });
+    }
+    for(auto& thread : threads)
+        thread.join();
+    double result = 0;
+    for(int j = 0; j < num_columns; j++)
+        result += ((j % 2 == 0) ? 1 : -1) * data[0][j] * dets[j];
+    return result;
+}
+
+Matrix Matrix::get_inverse_matrix_thread() const {
+    if(num_rows != num_columns) {
+        std::cerr << "ERROR: It is impossible to calculate the inverse matrix, this matrix is not square!" << std::endl;
+        exit(1);
+    }
+    return p_get_inverse_matrix_thread();
+}
+
+Matrix Matrix::p_get_inverse_matrix_thread() const {
+    double det = get_det_thread();
+    if(!det) {
+        std::cout << "ERROR: it is impossible to calculate the inverse matrix, the matrix is degenerate (det = 0)!" << std::endl;
+        exit(1);
+    }
+    Matrix result(num_rows, num_columns);
+
+    std::vector<std::thread> threads;
+    for(int row = 0; row < num_rows; row++) {
+        for(int col = 0; col < num_columns; col++) {
+            threads.emplace_back([&, row, col](){
+                Matrix lower(num_rows -1, num_columns - 1);
+                int l_i = 0;
+                for(int i = 0; i < num_rows; i++) {
+                    int l_j = 0;
+                    for(int j = 0; j < num_columns; j++) {
+                        if(i != row && j != col)
+                            lower.data[l_i][l_j++] = data[i][j];
+                    }
+                    if(i != row)
+                        l_i++;
+                }
+                result.data[col][row] = (((row + col) % 2 == 0) ? 1 : -1) * lower.get_det_thread() / det;
+            });
         }
     }
+    for(auto& thread : threads)
+        thread.join();
+    return result;
+}
+
+
+Matrix Matrix::plus_with(const Matrix &other, int num_threads) const {
+    if(this->num_rows != other.num_rows || this->num_columns != other.num_columns) {
+        std::cerr << "ERROR: sum operation is not possible, matrices of different sizes!" << std::endl;
+        exit(1);
+    }
+    Matrix result(num_rows, num_columns);
+    std::vector<std::future<void>> futures(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        futures[i] = std::async([this, &result, &other, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] + other.data[row][col];
+                }
+            }
+        });
+        start_row = end_row;
+    }
+    for(auto& future : futures)
+        future.wait();
+    return result;
+}
+
+Matrix Matrix::minus_with(const Matrix &other, int num_threads) const {
+    if(this->num_rows != other.num_rows || this->num_columns != other.num_columns) {
+        std::cerr << "ERROR: minus operation is not possible, matrices of different sizes!" << std::endl;
+        exit(1);
+    }
+    Matrix result(num_rows, num_columns);
+    std::vector<std::future<void>> futures(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        futures[i] = std::async([this, &result, &other, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] - other.data[row][col];
+                }
+            }
+        });
+        start_row = end_row;
+    }
+    for(auto& future : futures)
+        future.wait();
+    return result;
+
+}
+
+Matrix Matrix::multiply_sc(double scalar, int num_threads) const {
+    Matrix result(num_rows, num_columns);
+    std::vector<std::future<void>> futures(num_threads);
+    int block_size = num_rows / num_threads;
+    int remaining_rows = num_rows % num_threads;
+
+    int start_row = 0;
+    for(int i = 0; i < num_threads; i++) {
+        int end_row = start_row + block_size;
+        if(i == num_threads - 1)
+            end_row += remaining_rows;
+
+        futures[i] = std::async([this, &result, &scalar, start_row, end_row](){
+            for(int row = start_row; row < end_row; row++) {
+                for(int col = 0; col < num_columns; col++) {
+                    result.data[row][col] = data[row][col] * scalar;
+                }
+            }
+        });
+        start_row = end_row;
+    }
+    for(auto& future : futures)
+        future.wait();
     return result;
 }
