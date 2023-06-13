@@ -2,7 +2,6 @@
 #include <fstream>
 #include <string>
 #include <unordered_set>
-#include <thread>
 
 class Matrix {
 private:
@@ -13,13 +12,12 @@ private:
     double p_get_det(int start_row, int end_row, int end_col, std::unordered_set<int>& excluded_cols) const;
     Matrix p_get_inverse() const;
 
-    double p_get_det_thread() const;
-
 public:
     Matrix();
     Matrix(int rows, int columns);
     Matrix(int rows, int columns, double ** data_input);
     Matrix(int rows, int columns, std::string namefile);
+    Matrix(const Matrix& other);
     ~Matrix();
     int     get_num_rows() const;
     int     get_num_columns() const;
@@ -50,16 +48,7 @@ public:
     friend Matrix operator*(double scalar, const Matrix& other);
     friend Matrix operator*(Matrix& other, double scalar) { return scalar * other; }
     friend Matrix operator*(Matrix& first, Matrix& second);
-
-    // THREADS //
-
-    double get_det_thread() const;
-
 };
-
-
-
-
 
 
 int main() {
@@ -71,8 +60,8 @@ int main() {
             std::cin >> matrix(i, j);
     }
     std::cout << std::endl;
-    Matrix result(Matrix::UnitMatrix(5));
-    std::cout << (result == 1) << std::endl;
+    Matrix result(!matrix);
+    Matrix::print(result);
 
     return 0;
 }
@@ -129,6 +118,15 @@ Matrix::Matrix(int rows, int columns, std::string namefile) : num_rows(rows), nu
         std::cerr << "ERROR: file \"" << namefile << "\" not found!" << std::endl;
         exit(1);
     }
+}
+
+Matrix::Matrix(const Matrix& other) : num_rows(other.num_rows), num_columns(other.num_columns) {
+	data = new double*[num_rows];
+	for(int i = 0; i < num_rows; i++) {
+		data[i] = new double[num_columns];
+		for(int j = 0; j < num_columns; j++)
+			data[i][j] = other.data[i][j];
+	}
 }
 
 Matrix::~Matrix() {
@@ -389,17 +387,4 @@ Matrix operator*(Matrix& first, Matrix& second) {
         }
     }
     return result;
-}
-
-
-double Matrix::get_det_thread() const {
-    if(num_rows != num_columns) {
-        std::cerr << "ERROR: it is impossible to calculate the determinant, the matrix is not square!" << std::endl;
-        exit(1);
-    }
-    return p_get_det_thread();
-}
-
-double Matrix::p_get_det_thread() const {
-
 }
